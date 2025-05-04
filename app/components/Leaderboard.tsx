@@ -8,7 +8,6 @@ import { FaMedal } from 'react-icons/fa';
 interface Player {
   id: string;
   name: string;
-  email: string;
   elo: number;
   matches: number;
   wins: number;
