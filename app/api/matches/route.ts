@@ -116,25 +116,28 @@ export async function POST(request: Request) {
     const originalTeam2Avg = team2Avg;
     
     // Calculate player contribution weights - with fair bounds
-    const calculateContributionWeights = (teamPlayers, teamAvg, isWinningTeam) => {
+    const calculateContributionWeights = (
+      teamPlayers: any[], 
+      teamAvg: number
+    ): number[] => {
       // First calculate raw contribution factors
       const rawWeights = teamPlayers.map(p => p.elo / teamAvg);
       
       // Ensure weights are within reasonable bounds (0.7 to 1.3)
       // These bounds prevent extreme weights while still allowing for contribution differences
-      const boundedWeights = rawWeights.map(w => Math.max(0.7, Math.min(1.3, w)));
+      const boundedWeights = rawWeights.map((w: number) => Math.max(0.7, Math.min(1.3, w)));
       
       // Normalize to ensure weights sum to 2.0 (for 2 players)
-      const sum = boundedWeights.reduce((acc, w) => acc + w, 0);
-      return boundedWeights.map(w => (w / sum) * 2);
+      const sum = boundedWeights.reduce((acc: number, w: number) => acc + w, 0);
+      return boundedWeights.map((w: number) => (w / sum) * 2);
     };
     
     // Calculate weights based on team and outcome
-    const team1Weights = calculateContributionWeights(team1Players, team1Avg, isTeam1Winner);
-    const team2Weights = calculateContributionWeights(team2Players, team2Avg, !isTeam1Winner);
+    const team1Weights = calculateContributionWeights(team1Players, team1Avg);
+    const team2Weights = calculateContributionWeights(team2Players, team2Avg);
     
     // Initialize raw ELO changes
-    const rawEloChanges = {
+    const rawEloChanges: { [key: string]: number } = {
       [team1Players[0].id]: 0,
       [team1Players[1].id]: 0,
       [team2Players[0].id]: 0,
@@ -194,7 +197,7 @@ export async function POST(request: Request) {
     const totalEloChange = team1TotalElo + team2TotalElo;
     
     // Create the final ELO changes object with balanced, rounded values
-    const eloChanges = {};
+    const eloChanges: { [key: string]: number } = {};
     
     // Normalize to ensure zero-sum
     for (const id of [...team1]) {
