@@ -19,6 +19,7 @@ interface Match {
   team1: [Player, Player];
   team2: [Player, Player];
   winner: "team1" | "team2";
+  score: string;
   eloChanges: {
     [key: string]: number;  // Changed from number to string keys
   };
@@ -74,6 +75,16 @@ const MatchHistory: React.FC<MatchHistoryProps> = ({
                         ? `${match.team1[0].name} & ${match.team1[1].name}`
                         : `${match.team2[0].name} & ${match.team2[1].name}`}
                     </span>
+                  </div>
+                  <div className="flex flex-wrap gap-2 mt-1">
+                    {match.score.split(', ').map((set, idx) => (
+                      <span 
+                        key={idx} 
+                        className="bg-gray-700 px-2 py-1 rounded text-sm text-gray-300"
+                      >
+                        Set {idx + 1}: {set}
+                      </span>
+                    ))}
                   </div>
                 </div>
   

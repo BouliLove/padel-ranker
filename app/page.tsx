@@ -13,6 +13,8 @@ interface Player {
   elo: number;
   matches: number;
   wins: number;
+  sets_won: number;
+  sets_lost: number;
 }
 
 interface Match {

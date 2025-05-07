@@ -11,6 +11,8 @@ interface Player {
   elo: number;
   matches: number;
   wins: number;
+  sets_won: number; 
+  sets_lost: number; 
 }
 
 interface LeaderboardProps {
@@ -77,7 +79,7 @@ const Leaderboard: React.FC<LeaderboardProps> = ({
                 <td className="px-4 py-2">{player.name}</td>
                 <td className="px-4 py-2 text-right">{player.elo}</td>
                 <td className="px-4 py-2 text-right">
-                  <span className="text-green-500">{player.wins}</span>/{player.matches - player.wins}
+                  <span className="text-green-500">{player.sets_won}</span>/{player.sets_lost}
                 </td>
               </tr>
             ))}

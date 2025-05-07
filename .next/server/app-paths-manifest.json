@@ -1,3 +1,5 @@
 {
+  "/api/matches/route": "app/api/matches/route.js",
+  "/api/players/route": "app/api/players/route.js",
   "/page": "app/page.js"
 }
