@@ -268,11 +268,22 @@ export default function Home() {
 
             <div>
               <p className="font-semibold">Sets:</p>
-              <ul className="list-disc ml-6">
+              <ul className="list-disc ml-6 space-y-1">
                 {sets.map((set, idx) => (
-                  <li key={idx}>{set.team1}-{set.team2}</li>
+                  <li key={idx} className="flex items-center gap-2">
+                    <span>{set.team1}-{set.team2}</span>
+                    <button
+                      className="text-red-500 text-sm hover:underline"
+                      onClick={() => {
+                        setSets(prev => prev.filter((_, i) => i !== idx));
+                      }}
+                    >
+                      Remove
+                    </button>
+                  </li>
                 ))}
               </ul>
+
             </div>
 
             <div className="flex items-center gap-2">

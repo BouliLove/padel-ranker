@@ -103,22 +103,37 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Invalid player selection" }, { status: 400 });
     }
 
-    // Map player objects
-    const team1Players = team1.map(id => players.find(p => p.id === id));
-    const team2Players = team2.map(id => players.find(p => p.id === id));
+    const team1Players = team1.map(id => players.find(p => p.id === id)!);
+    const team2Players = team2.map(id => players.find(p => p.id === id)!);
 
-    const team1Avg = (team1Players[0].elo + team1Players[1].elo) / 2;
-    const team2Avg = (team2Players[0].elo + team2Players[1].elo) / 2;
+    // Initialize eloChanges per player
+    const eloChanges: { [playerId: string]: number } = {
+      [team1Players[0].id]: 0,
+      [team1Players[1].id]: 0,
+      [team2Players[0].id]: 0,
+      [team2Players[1].id]: 0,
+    };
 
-    const eloChange = calculateEloChange(
-      winner === "team1" ? team1Avg : team2Avg,
-      winner === "team1" ? team2Avg : team1Avg
-    );
+    // Per-set Elo logic
+    for (const set of sets) {
+      const margin = Math.abs(set.team1 - set.team2);
+      const team1Won = set.team1 > set.team2;
+      const team2Won = set.team2 > set.team1;
+      if (!team1Won && !team2Won) continue;
 
-    const eloChanges = Object.fromEntries([
-      ...team1Players.map(p => [p.id, winner === "team1" ? eloChange : -eloChange]),
-      ...team2Players.map(p => [p.id, winner === "team2" ? eloChange : -eloChange])
-    ]);
+      const team1Avg = (team1Players[0].elo + team1Players[1].elo) / 2;
+      const team2Avg = (team2Players[0].elo + team2Players[1].elo) / 2;
+
+      for (const player of team1Players) {
+        const delta = calculateEloChange(player.elo, team2Avg, team1Won, margin);
+        eloChanges[player.id] += delta;
+      }
+
+      for (const player of team2Players) {
+        const delta = calculateEloChange(player.elo, team1Avg, team2Won, margin);
+        eloChanges[player.id] += delta;
+      }
+    }
 
     // Insert match
     const { data: matchData, error: matchError } = await supabase
@@ -154,33 +169,51 @@ export async function POST(request: Request) {
 
     if (eloChangeError) {
       console.error("ELO changes insert error:", eloChangeError);
-      return NextResponse.json(
-        { warning: "Match recorded but ELO update failed", matchId },
-        { status: 207 }
-      );
+      return NextResponse.json({ warning: "ELO update failed", matchId }, { status: 207 });
     }
 
-    // Update players
+        // Update players
+        // Count sets won/lost per player
+    const setResults: { [id: string]: { won: number; lost: number } } = {};
+    players.forEach(p => setResults[p.id] = { won: 0, lost: 0 });
+
+    for (const set of sets) {
+      const team1Won = set.team1 > set.team2;
+      const team2Won = set.team2 > set.team1;
+      if (!team1Won && !team2Won) continue;
+
+      for (const p of team1Players) {
+        if (team1Won) setResults[p.id].won++;
+        else setResults[p.id].lost++;
+      }
+
+      for (const p of team2Players) {
+        if (team2Won) setResults[p.id].won++;
+        else setResults[p.id].lost++;
+      }
+    }
+
+    // Update all players with Elo + set stats
     const updatePromises = players.map(player =>
       supabase
         .from("players")
         .update({
           elo: player.elo + eloChanges[player.id],
           matches: player.matches + 1,
-          wins: player.wins + (eloChanges[player.id] > 0 ? 1 : 0)
+          wins: player.wins + (eloChanges[player.id] > 0 ? 1 : 0), // optional, keep match wins
+          sets_won: player.sets_won + setResults[player.id].won,
+          sets_lost: player.sets_lost + setResults[player.id].lost,
         })
         .eq("id", player.id)
     );
+
 
     const updateResults = await Promise.all(updatePromises);
     const updateErrors = updateResults.filter(r => r.error);
 
     if (updateErrors.length > 0) {
       console.error("Player update errors:", updateErrors);
-      return NextResponse.json(
-        { warning: "Match and ELO saved but player updates failed", matchId },
-        { status: 207 }
-      );
+      return NextResponse.json({ warning: "Partial stats update", matchId }, { status: 207 });
     }
 
     return NextResponse.json({
@@ -201,8 +234,16 @@ export async function POST(request: Request) {
   }
 }
 
-function calculateEloChange(winnerElo: number, loserElo: number): number {
-  const K = 32;
-  const expected = 1 / (1 + Math.pow(10, (loserElo - winnerElo) / 400));
-  return Math.round(K * (1 - expected));
+// 🔢 Elo per player, per set, with margin & enemy team level factored in
+function calculateEloChange(
+  playerElo: number,
+  opponentTeamElo: number,
+  setWon: boolean,
+  margin: number
+): number {
+  const K = 16;
+  const expected = 1 / (1 + Math.pow(10, (opponentTeamElo - playerElo) / 400));
+  const base = K * ((setWon ? 1 : 0) - expected);
+  const marginFactor = 1 + Math.min(margin, 4) * 0.15; // cap at +60%
+  return Math.round(base * marginFactor);
 }
