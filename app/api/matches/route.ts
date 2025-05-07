@@ -1,13 +1,10 @@
 import { createClient } from '@supabase/supabase-js';
 import { NextResponse } from 'next/server';
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
-
 
 export async function GET() {
   try {
@@ -17,6 +14,7 @@ export async function GET() {
         id,
         date,
         winner,
+        score,
         team1_player1(id, name, elo, matches, wins),
         team1_player2(id, name, elo, matches, wins),
         team2_player1(id, name, elo, matches, wins),
@@ -26,10 +24,7 @@ export async function GET() {
 
     if (matchesError) {
       console.error("Database error fetching matches:", matchesError);
-      return NextResponse.json(
-        { error: "Unable to retrieve match data" }, 
-        { status: 500 }
-      );
+      return NextResponse.json({ error: "Unable to retrieve match data" }, { status: 500 });
     }
 
     if (!matchesData?.length) return NextResponse.json([]);
@@ -41,10 +36,7 @@ export async function GET() {
 
     if (eloChangesError) {
       console.error("Database error fetching ELO changes:", eloChangesError);
-      return NextResponse.json(
-        { error: "Unable to retrieve ELO data" }, 
-        { status: 500 }
-      );
+      return NextResponse.json({ error: "Unable to retrieve ELO data" }, { status: 500 });
     }
 
     const formattedMatches = matchesData.map(match => ({
@@ -53,6 +45,7 @@ export async function GET() {
       team1: [match.team1_player1, match.team1_player2],
       team2: [match.team2_player1, match.team2_player2],
       winner: match.winner,
+      score: match.score,
       eloChanges: eloChangesData
         ?.filter(change => change.match_id === match.id)
         ?.reduce((acc, change) => ({
@@ -64,63 +57,37 @@ export async function GET() {
     return NextResponse.json(formattedMatches);
   } catch (error) {
     console.error("Unexpected error in GET /api/matches:", error);
-    return NextResponse.json(
-      { error: "Unable to retrieve matches" }, 
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Unable to retrieve matches" }, { status: 500 });
   }
 }
 
 export async function POST(request: Request) {
   try {
     const body = await request.json();
+    console.log("Received match POST body:", body);
 
     const { team1, team2, sets } = body;
 
-    if (!team1 || !team2 || !sets) {
-      return NextResponse.json(
-        { error: "Missing required fields" },
-        { status: 400 }
-      );
+    if (!Array.isArray(team1) || !Array.isArray(team2) || team1.length !== 2 || team2.length !== 2) {
+      return NextResponse.json({ error: "Invalid team structure" }, { status: 400 });
     }
 
-    if (!Array.isArray(team1) || team1.length !== 2 ||
-        !Array.isArray(team2) || team2.length !== 2 ||
-        !Array.isArray(sets) || sets.length === 0) {
-      return NextResponse.json(
-        { error: "Invalid team or sets structure" },
-        { status: 400 }
-      );
+    if (!Array.isArray(sets) || sets.length === 0 || sets.some(s => typeof s.team1 !== "number" || typeof s.team2 !== "number")) {
+      return NextResponse.json({ error: "Invalid sets format" }, { status: 400 });
     }
 
-    // Build score string and compute winner
-    let score = "";
+    // Build score string and determine winner
+    const score = sets.map(s => `${s.team1}-${s.team2}`).join(", ");
     let team1Wins = 0;
     let team2Wins = 0;
 
     for (const set of sets) {
-      const t1 = parseInt(set.team1);
-      const t2 = parseInt(set.team2);
-
-      if (isNaN(t1) || isNaN(t2)) {
-        return NextResponse.json(
-          { error: "Invalid set scores" },
-          { status: 400 }
-        );
-      }
-
-      score += `${t1}-${t2}, `;
-      if (t1 > t2) team1Wins++;
-      else if (t2 > t1) team2Wins++;
+      if (set.team1 > set.team2) team1Wins++;
+      else if (set.team2 > set.team1) team2Wins++;
     }
 
-    score = score.trim().replace(/,$/, "");
-
     if (team1Wins === team2Wins) {
-      return NextResponse.json(
-        { error: "Match cannot be a draw" },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: "Draws are not allowed" }, { status: 400 });
     }
 
     const winner = team1Wins > team2Wins ? "team1" : "team2";
@@ -133,13 +100,10 @@ export async function POST(request: Request) {
 
     if (playersError || players?.length !== 4) {
       console.error("Player fetch error:", playersError);
-      return NextResponse.json(
-        { error: "Invalid player selection" },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: "Invalid player selection" }, { status: 400 });
     }
 
-    // Calculate ELO changes
+    // Map player objects
     const team1Players = team1.map(id => players.find(p => p.id === id));
     const team2Players = team2.map(id => players.find(p => p.id === id));
 
@@ -172,15 +136,12 @@ export async function POST(request: Request) {
 
     if (matchError || !matchData?.length) {
       console.error("Match insert error:", matchError);
-      return NextResponse.json(
-        { error: "Failed to record match" },
-        { status: 500 }
-      );
+      return NextResponse.json({ error: "Failed to record match" }, { status: 500 });
     }
 
     const matchId = matchData[0].id;
 
-    // Record ELO changes
+    // Insert elo_changes
     const eloChangeRecords = Object.entries(eloChanges).map(([playerId, change]) => ({
       match_id: matchId,
       player_id: playerId,
@@ -192,16 +153,17 @@ export async function POST(request: Request) {
       .insert(eloChangeRecords);
 
     if (eloChangeError) {
-      console.error("ELO changes error:", eloChangeError);
+      console.error("ELO changes insert error:", eloChangeError);
       return NextResponse.json(
-        { warning: "Match recorded with partial updates", matchId },
+        { warning: "Match recorded but ELO update failed", matchId },
         { status: 207 }
       );
     }
 
-    // Update player stats
+    // Update players
     const updatePromises = players.map(player =>
-      supabase.from("players")
+      supabase
+        .from("players")
         .update({
           elo: player.elo + eloChanges[player.id],
           matches: player.matches + 1,
@@ -216,7 +178,7 @@ export async function POST(request: Request) {
     if (updateErrors.length > 0) {
       console.error("Player update errors:", updateErrors);
       return NextResponse.json(
-        { warning: "Partial stats updates", matchId },
+        { warning: "Match and ELO saved but player updates failed", matchId },
         { status: 207 }
       );
     }
@@ -233,18 +195,11 @@ export async function POST(request: Request) {
   } catch (error: any) {
     console.error("Unexpected error in POST /api/matches:", error);
     if (error.name === 'SyntaxError') {
-      return NextResponse.json(
-        { error: "Invalid request format" },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: "Invalid JSON format" }, { status: 400 });
     }
-    return NextResponse.json(
-      { error: "Unable to process match" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Unable to process match" }, { status: 500 });
   }
 }
-
 
 function calculateEloChange(winnerElo: number, loserElo: number): number {
   const K = 32;
