@@ -131,7 +131,11 @@ export async function POST(request: Request) {
       return contributionFactor;
     });
 
-    // Per-set Elo logic
+    // Store original team average ELOs for consistent calculation across all sets
+    const originalTeam1Avg = team1Avg;
+    const originalTeam2Avg = team2Avg;
+
+    // Per-set Elo logic - FIXED to use original ELO values for each set
     for (const set of sets) {
       const margin = Math.abs(set.team1 - set.team2);
       const team1Won = set.team1 > set.team2;
@@ -144,7 +148,8 @@ export async function POST(request: Request) {
       for (let i = 0; i < team1Players.length; i++) {
         const player = team1Players[i];
         const weight = team1Weights[i];
-        const delta = calculateEloChange(player.elo, team2Avg, team1Won, marginFactor);
+        // FIXED: Use original player ELO and original team average ELO for each set calculation
+        const delta = calculateEloChange(player.elo, originalTeam2Avg, team1Won, marginFactor);
         // Apply weight to the delta
         eloChanges[player.id] += Math.round(delta * weight);
       }
@@ -152,7 +157,8 @@ export async function POST(request: Request) {
       for (let i = 0; i < team2Players.length; i++) {
         const player = team2Players[i];
         const weight = team2Weights[i];
-        const delta = calculateEloChange(player.elo, team1Avg, team2Won, marginFactor);
+        // FIXED: Use original player ELO and original team average ELO for each set calculation
+        const delta = calculateEloChange(player.elo, originalTeam1Avg, team2Won, marginFactor);
         // Apply weight to the delta
         eloChanges[player.id] += Math.round(delta * weight);
       }
@@ -243,7 +249,7 @@ export async function POST(request: Request) {
         .update({
           elo: player.elo + eloChanges[player.id],
           matches: player.matches + 1,
-          wins: player.wins + (eloChanges[player.id] > 0 ? 1 : 0), // optional, keep match wins
+          wins: player.wins + (winner === "team1" && team1.includes(player.id) || winner === "team2" && team2.includes(player.id) ? 1 : 0),
           sets_won: player.sets_won + setResults[player.id].won,
           sets_lost: player.sets_lost + setResults[player.id].lost,
         })
