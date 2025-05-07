@@ -91,6 +91,7 @@ export async function POST(request: Request) {
     }
 
     const winner = team1Wins > team2Wins ? "team1" : "team2";
+    const isTeam1Winner = winner === "team1";
 
     // Fetch players
     const { data: players, error: playersError } = await supabase
@@ -106,36 +107,44 @@ export async function POST(request: Request) {
     const team1Players = team1.map(id => players.find(p => p.id === id)!);
     const team2Players = team2.map(id => players.find(p => p.id === id)!);
 
-    // Initialize eloChanges per player
-    const eloChanges: { [playerId: string]: number } = {
+    // Calculate team averages
+    const team1Avg = (team1Players[0].elo + team1Players[1].elo) / 2;
+    const team2Avg = (team2Players[0].elo + team2Players[1].elo) / 2;
+    
+    // Store original team average ELOs for consistent calculation across all sets
+    const originalTeam1Avg = team1Avg;
+    const originalTeam2Avg = team2Avg;
+    
+    // Calculate player contribution weights - with fair bounds
+    const calculateContributionWeights = (teamPlayers, teamAvg, isWinningTeam) => {
+      // First calculate raw contribution factors
+      const rawWeights = teamPlayers.map(p => p.elo / teamAvg);
+      
+      // Ensure weights are within reasonable bounds (0.7 to 1.3)
+      // These bounds prevent extreme weights while still allowing for contribution differences
+      const boundedWeights = rawWeights.map(w => Math.max(0.7, Math.min(1.3, w)));
+      
+      // Normalize to ensure weights sum to 2.0 (for 2 players)
+      const sum = boundedWeights.reduce((acc, w) => acc + w, 0);
+      return boundedWeights.map(w => (w / sum) * 2);
+    };
+    
+    // Calculate weights based on team and outcome
+    const team1Weights = calculateContributionWeights(team1Players, team1Avg, isTeam1Winner);
+    const team2Weights = calculateContributionWeights(team2Players, team2Avg, !isTeam1Winner);
+    
+    // Initialize raw ELO changes
+    const rawEloChanges = {
       [team1Players[0].id]: 0,
       [team1Players[1].id]: 0,
       [team2Players[0].id]: 0,
       [team2Players[1].id]: 0,
     };
 
-    // Calculate player contribution weights within their teams
-    // This weights players based on their contribution to team average
-    const team1Avg = (team1Players[0].elo + team1Players[1].elo) / 2;
-    const team2Avg = (team2Players[0].elo + team2Players[1].elo) / 2;
-    
-    const team1Weights = team1Players.map(p => {
-      // Higher Elo = higher contribution weight
-      const contributionFactor = p.elo / team1Avg;
-      // Normalize to ensure weights sum close to 2.0 (for 2 players)
-      return contributionFactor;
-    });
-    
-    const team2Weights = team2Players.map(p => {
-      const contributionFactor = p.elo / team2Avg;
-      return contributionFactor;
-    });
+    // Match winner bonus
+    const matchWinnerBonus = 8;
 
-    // Store original team average ELOs for consistent calculation across all sets
-    const originalTeam1Avg = team1Avg;
-    const originalTeam2Avg = team2Avg;
-
-    // Per-set Elo logic - FIXED to use original ELO values for each set
+    // Calculate raw ELO changes for each set
     for (const set of sets) {
       const margin = Math.abs(set.team1 - set.team2);
       const team1Won = set.team1 > set.team2;
@@ -145,43 +154,58 @@ export async function POST(request: Request) {
       // Use progressive margin impact with diminishing returns
       const marginFactor = getProgressiveMarginFactor(margin);
 
+      // Calculate raw changes for team 1
       for (let i = 0; i < team1Players.length; i++) {
         const player = team1Players[i];
         const weight = team1Weights[i];
-        // FIXED: Use original player ELO and original team average ELO for each set calculation
         const delta = calculateEloChange(player.elo, originalTeam2Avg, team1Won, marginFactor);
-        // Apply weight to the delta
-        eloChanges[player.id] += Math.round(delta * weight);
+        rawEloChanges[player.id] += delta * weight;
       }
 
+      // Calculate raw changes for team 2
       for (let i = 0; i < team2Players.length; i++) {
         const player = team2Players[i];
         const weight = team2Weights[i];
-        // FIXED: Use original player ELO and original team average ELO for each set calculation
         const delta = calculateEloChange(player.elo, originalTeam1Avg, team2Won, marginFactor);
-        // Apply weight to the delta
-        eloChanges[player.id] += Math.round(delta * weight);
+        rawEloChanges[player.id] += delta * weight;
       }
     }
-    
-    // Add overall match winner bonus
-    // This rewards players for winning the match, not just individual sets
-    const matchWinnerBonus = 8; // Additional Elo points for being on the winning team
-    
+
+    // Add winner bonus to raw ELO changes
     if (winner === "team1") {
       for (let i = 0; i < team1Players.length; i++) {
         const player = team1Players[i];
         const weight = team1Weights[i];
-        // Apply weighted bonus based on player's contribution
-        eloChanges[player.id] += Math.round(matchWinnerBonus * weight);
+        rawEloChanges[player.id] += matchWinnerBonus * weight;
       }
     } else {
       for (let i = 0; i < team2Players.length; i++) {
         const player = team2Players[i];
         const weight = team2Weights[i];
-        // Apply weighted bonus based on player's contribution
-        eloChanges[player.id] += Math.round(matchWinnerBonus * weight);
+        rawEloChanges[player.id] += matchWinnerBonus * weight;
       }
+    }
+
+    // Calculate total team ELO changes
+    const team1TotalElo = team1.reduce((sum, id) => sum + rawEloChanges[id], 0);
+    const team2TotalElo = team2.reduce((sum, id) => sum + rawEloChanges[id], 0);
+    
+    // Ensure zero-sum (one team's gain equals the other's loss)
+    const totalEloChange = team1TotalElo + team2TotalElo;
+    
+    // Create the final ELO changes object with balanced, rounded values
+    const eloChanges = {};
+    
+    // Normalize to ensure zero-sum
+    for (const id of [...team1]) {
+      // For team 1, adjust proportionally to ensure team total is correct
+      const adjustmentFactor = (team1TotalElo !== 0) ? -team2TotalElo / team1TotalElo : 1;
+      eloChanges[id] = Math.round(rawEloChanges[id] * adjustmentFactor);
+    }
+    
+    for (const id of [...team2]) {
+      // For team 2, round but preserve original sign
+      eloChanges[id] = Math.round(rawEloChanges[id]);
     }
 
     // Insert match
@@ -292,7 +316,7 @@ function calculateEloChange(
   const K = 16;
   const expected = 1 / (1 + Math.pow(10, (opponentTeamElo - playerElo) / 400));
   const base = K * ((setWon ? 1 : 0) - expected);
-  return Math.round(base * marginFactor);
+  return base * marginFactor;
 }
 
 // Progressive margin impact with diminishing returns
