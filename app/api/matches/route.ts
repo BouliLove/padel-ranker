@@ -74,39 +74,63 @@ export async function GET() {
 export async function POST(request: Request) {
   try {
     const body = await request.json();
-    
-    // Validation
-    if (!body.team1 || !body.team2 || !body.winner) {
+
+    const { team1, team2, sets } = body;
+
+    if (!team1 || !team2 || !sets) {
       return NextResponse.json(
         { error: "Missing required fields" },
         { status: 400 }
       );
     }
-    
-    const [team1Ids, team2Ids] = [body.team1, body.team2];
-    const winner = body.winner;
-    
-    if (!Array.isArray(team1Ids) || team1Ids.length !== 2 ||
-        !Array.isArray(team2Ids) || team2Ids.length !== 2) {
+
+    if (!Array.isArray(team1) || team1.length !== 2 ||
+        !Array.isArray(team2) || team2.length !== 2 ||
+        !Array.isArray(sets) || sets.length === 0) {
       return NextResponse.json(
-        { error: "Invalid team structure" },
+        { error: "Invalid team or sets structure" },
         { status: 400 }
       );
     }
-    
-    if (!['team1', 'team2'].includes(winner)) {
+
+    // Build score string and compute winner
+    let score = "";
+    let team1Wins = 0;
+    let team2Wins = 0;
+
+    for (const set of sets) {
+      const t1 = parseInt(set.team1);
+      const t2 = parseInt(set.team2);
+
+      if (isNaN(t1) || isNaN(t2)) {
+        return NextResponse.json(
+          { error: "Invalid set scores" },
+          { status: 400 }
+        );
+      }
+
+      score += `${t1}-${t2}, `;
+      if (t1 > t2) team1Wins++;
+      else if (t2 > t1) team2Wins++;
+    }
+
+    score = score.trim().replace(/,$/, "");
+
+    if (team1Wins === team2Wins) {
       return NextResponse.json(
-        { error: "Invalid winner value" },
+        { error: "Match cannot be a draw" },
         { status: 400 }
       );
     }
-    
+
+    const winner = team1Wins > team2Wins ? "team1" : "team2";
+
     // Fetch players
     const { data: players, error: playersError } = await supabase
       .from("players")
       .select("*")
-      .in("id", [...team1Ids, ...team2Ids]);
-      
+      .in("id", [...team1, ...team2]);
+
     if (playersError || players?.length !== 4) {
       console.error("Player fetch error:", playersError);
       return NextResponse.json(
@@ -114,37 +138,38 @@ export async function POST(request: Request) {
         { status: 400 }
       );
     }
-    
+
     // Calculate ELO changes
-    const team1Players = team1Ids.map(id => players.find(p => p.id === id));
-    const team2Players = team2Ids.map(id => players.find(p => p.id === id));
-    
+    const team1Players = team1.map(id => players.find(p => p.id === id));
+    const team2Players = team2.map(id => players.find(p => p.id === id));
+
     const team1Avg = (team1Players[0].elo + team1Players[1].elo) / 2;
     const team2Avg = (team2Players[0].elo + team2Players[1].elo) / 2;
-    
+
     const eloChange = calculateEloChange(
       winner === "team1" ? team1Avg : team2Avg,
       winner === "team1" ? team2Avg : team1Avg
     );
-    
+
     const eloChanges = Object.fromEntries([
       ...team1Players.map(p => [p.id, winner === "team1" ? eloChange : -eloChange]),
       ...team2Players.map(p => [p.id, winner === "team2" ? eloChange : -eloChange])
     ]);
-    
+
     // Insert match
     const { data: matchData, error: matchError } = await supabase
       .from("matches")
       .insert([{
         date: new Date().toISOString(),
         winner,
+        score,
         team1_player1: team1Players[0].id,
         team1_player2: team1Players[1].id,
         team2_player1: team2Players[0].id,
         team2_player2: team2Players[1].id,
       }])
       .select();
-      
+
     if (matchError || !matchData?.length) {
       console.error("Match insert error:", matchError);
       return NextResponse.json(
@@ -152,28 +177,30 @@ export async function POST(request: Request) {
         { status: 500 }
       );
     }
-    
+
+    const matchId = matchData[0].id;
+
     // Record ELO changes
     const eloChangeRecords = Object.entries(eloChanges).map(([playerId, change]) => ({
-      match_id: matchData[0].id,
+      match_id: matchId,
       player_id: playerId,
       elo_change: change
     }));
-    
+
     const { error: eloChangeError } = await supabase
       .from("elo_changes")
       .insert(eloChangeRecords);
-    
+
     if (eloChangeError) {
       console.error("ELO changes error:", eloChangeError);
       return NextResponse.json(
-        { warning: "Match recorded with partial updates", matchId: matchData[0].id },
+        { warning: "Match recorded with partial updates", matchId },
         { status: 207 }
       );
     }
-    
+
     // Update player stats
-    const updatePromises = players.map(player => 
+    const updatePromises = players.map(player =>
       supabase.from("players")
         .update({
           elo: player.elo + eloChanges[player.id],
@@ -182,26 +209,27 @@ export async function POST(request: Request) {
         })
         .eq("id", player.id)
     );
-    
+
     const updateResults = await Promise.all(updatePromises);
     const updateErrors = updateResults.filter(r => r.error);
-    
+
     if (updateErrors.length > 0) {
       console.error("Player update errors:", updateErrors);
       return NextResponse.json(
-        { warning: "Partial stats updates", matchId: matchData[0].id },
+        { warning: "Partial stats updates", matchId },
         { status: 207 }
       );
     }
-    
+
     return NextResponse.json({
-      id: matchData[0].id,
+      id: matchId,
       team1: team1Players,
       team2: team2Players,
       winner,
+      score,
       eloChanges
     });
-    
+
   } catch (error: any) {
     console.error("Unexpected error in POST /api/matches:", error);
     if (error.name === 'SyntaxError') {
@@ -216,6 +244,7 @@ export async function POST(request: Request) {
     );
   }
 }
+
 
 function calculateEloChange(winnerElo: number, loserElo: number): number {
   const K = 32;
