@@ -114,6 +114,23 @@ export async function POST(request: Request) {
       [team2Players[1].id]: 0,
     };
 
+    // Calculate player contribution weights within their teams
+    // This weights players based on their contribution to team average
+    const team1Avg = (team1Players[0].elo + team1Players[1].elo) / 2;
+    const team2Avg = (team2Players[0].elo + team2Players[1].elo) / 2;
+    
+    const team1Weights = team1Players.map(p => {
+      // Higher Elo = higher contribution weight
+      const contributionFactor = p.elo / team1Avg;
+      // Normalize to ensure weights sum close to 2.0 (for 2 players)
+      return contributionFactor;
+    });
+    
+    const team2Weights = team2Players.map(p => {
+      const contributionFactor = p.elo / team2Avg;
+      return contributionFactor;
+    });
+
     // Per-set Elo logic
     for (const set of sets) {
       const margin = Math.abs(set.team1 - set.team2);
@@ -121,17 +138,43 @@ export async function POST(request: Request) {
       const team2Won = set.team2 > set.team1;
       if (!team1Won && !team2Won) continue;
 
-      const team1Avg = (team1Players[0].elo + team1Players[1].elo) / 2;
-      const team2Avg = (team2Players[0].elo + team2Players[1].elo) / 2;
+      // Use progressive margin impact with diminishing returns
+      const marginFactor = getProgressiveMarginFactor(margin);
 
-      for (const player of team1Players) {
-        const delta = calculateEloChange(player.elo, team2Avg, team1Won, margin);
-        eloChanges[player.id] += delta;
+      for (let i = 0; i < team1Players.length; i++) {
+        const player = team1Players[i];
+        const weight = team1Weights[i];
+        const delta = calculateEloChange(player.elo, team2Avg, team1Won, marginFactor);
+        // Apply weight to the delta
+        eloChanges[player.id] += Math.round(delta * weight);
       }
 
-      for (const player of team2Players) {
-        const delta = calculateEloChange(player.elo, team1Avg, team2Won, margin);
-        eloChanges[player.id] += delta;
+      for (let i = 0; i < team2Players.length; i++) {
+        const player = team2Players[i];
+        const weight = team2Weights[i];
+        const delta = calculateEloChange(player.elo, team1Avg, team2Won, marginFactor);
+        // Apply weight to the delta
+        eloChanges[player.id] += Math.round(delta * weight);
+      }
+    }
+    
+    // Add overall match winner bonus
+    // This rewards players for winning the match, not just individual sets
+    const matchWinnerBonus = 8; // Additional Elo points for being on the winning team
+    
+    if (winner === "team1") {
+      for (let i = 0; i < team1Players.length; i++) {
+        const player = team1Players[i];
+        const weight = team1Weights[i];
+        // Apply weighted bonus based on player's contribution
+        eloChanges[player.id] += Math.round(matchWinnerBonus * weight);
+      }
+    } else {
+      for (let i = 0; i < team2Players.length; i++) {
+        const player = team2Players[i];
+        const weight = team2Weights[i];
+        // Apply weighted bonus based on player's contribution
+        eloChanges[player.id] += Math.round(matchWinnerBonus * weight);
       }
     }
 
@@ -172,8 +215,8 @@ export async function POST(request: Request) {
       return NextResponse.json({ warning: "ELO update failed", matchId }, { status: 207 });
     }
 
-        // Update players
-        // Count sets won/lost per player
+    // Update players
+    // Count sets won/lost per player
     const setResults: { [id: string]: { won: number; lost: number } } = {};
     players.forEach(p => setResults[p.id] = { won: 0, lost: 0 });
 
@@ -207,7 +250,6 @@ export async function POST(request: Request) {
         .eq("id", player.id)
     );
 
-
     const updateResults = await Promise.all(updatePromises);
     const updateErrors = updateResults.filter(r => r.error);
 
@@ -234,16 +276,29 @@ export async function POST(request: Request) {
   }
 }
 
-// 🔢 Elo per player, per set, with margin & enemy team level factored in
+// Calculate Elo change using standard formula, but with margin factor provided separately
 function calculateEloChange(
   playerElo: number,
   opponentTeamElo: number,
   setWon: boolean,
-  margin: number
+  marginFactor: number
 ): number {
   const K = 16;
   const expected = 1 / (1 + Math.pow(10, (opponentTeamElo - playerElo) / 400));
   const base = K * ((setWon ? 1 : 0) - expected);
-  const marginFactor = 1 + Math.min(margin, 4) * 0.15; // cap at +60%
   return Math.round(base * marginFactor);
+}
+
+// Progressive margin impact with diminishing returns
+function getProgressiveMarginFactor(margin: number): number {
+  // Square root function provides diminishing returns
+  // First point has highest impact, subsequent points have decreasing additional impact
+  return 1 + 0.25 * Math.sqrt(margin);
+  
+  // This gives more balanced factors:
+  // margin 1: 1.25x  (25% bonus)
+  // margin 2: 1.35x  (35% bonus)
+  // margin 3: 1.43x  (43% bonus)
+  // margin 4: 1.50x  (50% bonus) 
+  // margin 9: 1.75x  (75% bonus)
 }
