@@ -91,7 +91,6 @@ export async function POST(request: Request) {
     }
 
     const winner = team1Wins > team2Wins ? "team1" : "team2";
-    const isTeam1Winner = winner === "team1";
 
     // Fetch players
     const { data: players, error: playersError } = await supabase
@@ -107,109 +106,42 @@ export async function POST(request: Request) {
     const team1Players = team1.map(id => players.find(p => p.id === id)!);
     const team2Players = team2.map(id => players.find(p => p.id === id)!);
 
-    // Calculate team averages
-    const team1Avg = (team1Players[0].elo + team1Players[1].elo) / 2;
-    const team2Avg = (team2Players[0].elo + team2Players[1].elo) / 2;
-    
-    // Store original team average ELOs for consistent calculation across all sets
-    const originalTeam1Avg = team1Avg;
-    const originalTeam2Avg = team2Avg;
-    
-    // Calculate player contribution weights - with fair bounds
-    const calculateContributionWeights = (
-      teamPlayers: any[], 
-      teamAvg: number
-    ): number[] => {
-      // First calculate raw contribution factors
-      const rawWeights = teamPlayers.map(p => p.elo / teamAvg);
-      
-      // Ensure weights are within reasonable bounds (0.7 to 1.3)
-      // These bounds prevent extreme weights while still allowing for contribution differences
-      const boundedWeights = rawWeights.map((w: number) => Math.max(0.7, Math.min(1.3, w)));
-      
-      // Normalize to ensure weights sum to 2.0 (for 2 players)
-      const sum = boundedWeights.reduce((acc: number, w: number) => acc + w, 0);
-      return boundedWeights.map((w: number) => (w / sum) * 2);
-    };
-    
-    // Calculate weights based on team and outcome
-    const team1Weights = calculateContributionWeights(team1Players, team1Avg);
-    const team2Weights = calculateContributionWeights(team2Players, team2Avg);
-    
-    // Initialize raw ELO changes
-    const rawEloChanges: { [key: string]: number } = {
+    const eloChanges: { [playerId: string]: number } = {
       [team1Players[0].id]: 0,
       [team1Players[1].id]: 0,
       [team2Players[0].id]: 0,
       [team2Players[1].id]: 0,
     };
 
-    // Match winner bonus
-    const matchWinnerBonus = 8;
-
-    // Calculate raw ELO changes for each set
     for (const set of sets) {
       const margin = Math.abs(set.team1 - set.team2);
       const team1Won = set.team1 > set.team2;
       const team2Won = set.team2 > set.team1;
+
       if (!team1Won && !team2Won) continue;
 
-      // Use progressive margin impact with diminishing returns
-      const marginFactor = getProgressiveMarginFactor(margin);
+      const team1Avg = (team1Players[0].elo + team1Players[1].elo) / 2;
+      const team2Avg = (team2Players[0].elo + team2Players[1].elo) / 2;
 
-      // Calculate raw changes for team 1
-      for (let i = 0; i < team1Players.length; i++) {
-        const player = team1Players[i];
-        const weight = team1Weights[i];
-        const delta = calculateEloChange(player.elo, originalTeam2Avg, team1Won, marginFactor);
-        rawEloChanges[player.id] += delta * weight;
+      // Team 1
+      for (const [i, player] of team1Players.entries()) {
+        const teammate = team1Players[1 - i];
+        const delta = calculateEloChangeWithTeammate(player.elo, teammate.elo, team2Avg, team1Won, margin);
+        eloChanges[player.id] += delta;
       }
 
-      // Calculate raw changes for team 2
-      for (let i = 0; i < team2Players.length; i++) {
-        const player = team2Players[i];
-        const weight = team2Weights[i];
-        const delta = calculateEloChange(player.elo, originalTeam1Avg, team2Won, marginFactor);
-        rawEloChanges[player.id] += delta * weight;
+      // Team 2
+      for (const [i, player] of team2Players.entries()) {
+        const teammate = team2Players[1 - i];
+        const delta = calculateEloChangeWithTeammate(player.elo, teammate.elo, team1Avg, team2Won, margin);
+        eloChanges[player.id] += delta;
       }
     }
 
-    // Add winner bonus to raw ELO changes
-    if (winner === "team1") {
-      for (let i = 0; i < team1Players.length; i++) {
-        const player = team1Players[i];
-        const weight = team1Weights[i];
-        rawEloChanges[player.id] += matchWinnerBonus * weight;
-      }
-    } else {
-      for (let i = 0; i < team2Players.length; i++) {
-        const player = team2Players[i];
-        const weight = team2Weights[i];
-        rawEloChanges[player.id] += matchWinnerBonus * weight;
-      }
-    }
-
-    // Calculate total team ELO changes
-    const team1TotalElo = team1.reduce((sum, id) => sum + rawEloChanges[id], 0);
-    const team2TotalElo = team2.reduce((sum, id) => sum + rawEloChanges[id], 0);
-    
-    // Ensure zero-sum (one team's gain equals the other's loss)
-    const totalEloChange = team1TotalElo + team2TotalElo;
-    
-    // Create the final ELO changes object with balanced, rounded values
-    const eloChanges: { [key: string]: number } = {};
-    
-    // Normalize to ensure zero-sum
-    for (const id of [...team1]) {
-      // For team 1, adjust proportionally to ensure team total is correct
-      const adjustmentFactor = (team1TotalElo !== 0) ? -team2TotalElo / team1TotalElo : 1;
-      eloChanges[id] = Math.round(rawEloChanges[id] * adjustmentFactor);
-    }
-    
-    for (const id of [...team2]) {
-      // For team 2, round but preserve original sign
-      eloChanges[id] = Math.round(rawEloChanges[id]);
-    }
+    // Cap max Elo change per player per match
+    Object.keys(eloChanges).forEach(id => {
+      eloChanges[id] = Math.max(-40, Math.min(40, eloChanges[id]));
+    });
 
     // Insert match
     const { data: matchData, error: matchError } = await supabase
@@ -249,36 +181,13 @@ export async function POST(request: Request) {
     }
 
     // Update players
-    // Count sets won/lost per player
-    const setResults: { [id: string]: { won: number; lost: number } } = {};
-    players.forEach(p => setResults[p.id] = { won: 0, lost: 0 });
-
-    for (const set of sets) {
-      const team1Won = set.team1 > set.team2;
-      const team2Won = set.team2 > set.team1;
-      if (!team1Won && !team2Won) continue;
-
-      for (const p of team1Players) {
-        if (team1Won) setResults[p.id].won++;
-        else setResults[p.id].lost++;
-      }
-
-      for (const p of team2Players) {
-        if (team2Won) setResults[p.id].won++;
-        else setResults[p.id].lost++;
-      }
-    }
-
-    // Update all players with Elo + set stats
     const updatePromises = players.map(player =>
       supabase
         .from("players")
         .update({
           elo: player.elo + eloChanges[player.id],
           matches: player.matches + 1,
-          wins: player.wins + (winner === "team1" && team1.includes(player.id) || winner === "team2" && team2.includes(player.id) ? 1 : 0),
-          sets_won: player.sets_won + setResults[player.id].won,
-          sets_lost: player.sets_lost + setResults[player.id].lost,
+          wins: player.wins + (eloChanges[player.id] > 0 ? 1 : 0)
         })
         .eq("id", player.id)
     );
@@ -309,29 +218,18 @@ export async function POST(request: Request) {
   }
 }
 
-// Calculate Elo change using standard formula, but with margin factor provided separately
-function calculateEloChange(
+// 🎯 Elo per player per set with teammate + margin + opponent scaling
+function calculateEloChangeWithTeammate(
   playerElo: number,
+  teammateElo: number,
   opponentTeamElo: number,
   setWon: boolean,
-  marginFactor: number
+  margin: number
 ): number {
   const K = 16;
-  const expected = 1 / (1 + Math.pow(10, (opponentTeamElo - playerElo) / 400));
+  const effectiveElo = playerElo * 0.75 + teammateElo * 0.25;
+  const expected = 1 / (1 + Math.pow(10, (opponentTeamElo - effectiveElo) / 400));
   const base = K * ((setWon ? 1 : 0) - expected);
-  return base * marginFactor;
-}
-
-// Progressive margin impact with diminishing returns
-function getProgressiveMarginFactor(margin: number): number {
-  // Square root function provides diminishing returns
-  // First point has highest impact, subsequent points have decreasing additional impact
-  return 1 + 0.25 * Math.sqrt(margin);
-  
-  // This gives more balanced factors:
-  // margin 1: 1.25x  (25% bonus)
-  // margin 2: 1.35x  (35% bonus)
-  // margin 3: 1.43x  (43% bonus)
-  // margin 4: 1.50x  (50% bonus) 
-  // margin 9: 1.75x  (75% bonus)
+  const marginFactor = 1 + Math.min(margin, 4) * 0.15;
+  return Math.round(base * marginFactor);
 }
