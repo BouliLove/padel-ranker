@@ -90,8 +90,10 @@ export default function Home() {
     loadData();
   }, []);
 
-  // Filter out players with no matches
-  const activePlayersOnly = players.filter(player => player.matches > 0);
+  // Filter out players with no matches and remove the NPC player
+  const activePlayersOnly = players.filter(player => 
+  player.matches > 0 && player.name !== "NPC"
+  );
 
   const handlePlayerSelect = (team: "team1" | "team2", index: 0 | 1, playerId: string) => {
     setSelectedPlayers((prev) => {
