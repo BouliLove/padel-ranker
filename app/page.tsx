@@ -48,6 +48,10 @@ export default function Home() {
     name: false,
     nameDuplicate: false,
   });
+  
+  // Add state for pagination
+  const [leaderboardPage, setLeaderboardPage] = useState(1);
+  const [matchHistoryPage, setMatchHistoryPage] = useState(1);
 
   const fetchPlayers = async () => {
     try {
@@ -85,6 +89,9 @@ export default function Home() {
 
     loadData();
   }, []);
+
+  // Filter out players with no matches
+  const activePlayersOnly = players.filter(player => player.matches > 0);
 
   const handlePlayerSelect = (team: "team1" | "team2", index: 0 | 1, playerId: string) => {
     setSelectedPlayers((prev) => {
@@ -312,11 +319,19 @@ export default function Home() {
               <FaPlus /> Add Player
             </button>
           </div>
-          <Leaderboard players={players} currentPage={1} onPageChange={() => {}} />
+          <Leaderboard 
+            players={activePlayersOnly} 
+            currentPage={leaderboardPage} 
+            onPageChange={setLeaderboardPage} 
+          />
         </div>
 
         <div className="lg:col-span-2 card">
-          <MatchHistory matches={matches} currentPage={1} onPageChange={() => {}} />
+          <MatchHistory 
+            matches={matches} 
+            currentPage={matchHistoryPage} 
+            onPageChange={setMatchHistoryPage} 
+          />
         </div>
       </div>
 

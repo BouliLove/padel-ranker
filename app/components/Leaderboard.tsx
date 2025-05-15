@@ -61,7 +61,7 @@ const Leaderboard: React.FC<LeaderboardProps> = ({
               <th className="px-4 py-2">#</th>
               <th className="px-4 py-2">Player</th>
               <th className="px-4 py-2 text-right">ELO</th>
-              <th className="px-4 py-2 text-right"><span className="text-green-500">W</span>/L</th>
+              {/* W/L column removed */}
             </tr>
           </thead>
           <tbody>
@@ -78,9 +78,7 @@ const Leaderboard: React.FC<LeaderboardProps> = ({
                 </td>
                 <td className="px-4 py-2">{player.name}</td>
                 <td className="px-4 py-2 text-right">{player.elo}</td>
-                <td className="px-4 py-2 text-right">
-                  <span className="text-green-500">{player.sets_won}</span>/{player.sets_lost}
-                </td>
+                {/* W/L cell removed */}
               </tr>
             ))}
           </tbody>
